@@ -60,12 +60,18 @@ export class Component extends ComponentResource {
   ) {
     const transforms = ComponentTransforms.get(type) ?? [];
     for (const transform of transforms) {
-      transform({ props: args, opts });
+      transform({ name, props: args, opts });
     }
     super(type, name, args, {
       transformations: [
         // Ensure logical and physical names are prefixed
         (args) => {
+          // Ensure component names do not contain spaces
+          if (name.includes(" "))
+            throw new Error(
+              `Invalid component name "${name}" (${args.type}). Component names cannot contain spaces.`,
+            );
+
           // Ensure names are prefixed with parent's name
           if (
             args.type !== type &&
@@ -166,6 +172,7 @@ export class Component extends ComponentResource {
               "aws:ses/domainIdentityVerification:DomainIdentityVerification",
               "aws:sesv2/configurationSetEventDestination:ConfigurationSetEventDestination",
               "aws:sesv2/emailIdentity:EmailIdentity",
+              "aws:sns/topicPolicy:TopicPolicy",
               "aws:sns/topicSubscription:TopicSubscription",
               "aws:sqs/queuePolicy:QueuePolicy",
               "aws:ssm/parameter:Parameter",
@@ -430,7 +437,7 @@ export class Component extends ComponentResource {
 const ComponentTransforms = new Map<string, any[]>();
 export function $transform<T, Args, Options>(
   resource: { new (name: string, args: Args, opts?: Options): T },
-  cb: (args: Args, opts: Options) => void,
+  cb: (args: Args, opts: Options, name: string) => void,
 ) {
   // @ts-expect-error
   const type = resource.__pulumiType;
@@ -441,14 +448,14 @@ export function $transform<T, Args, Options>(
       ComponentTransforms.set(type, transforms);
     }
     transforms.push((input: any) => {
-      cb(input.props, input.opts);
+      cb(input.props, input.opts, input.name);
       return input;
     });
     return;
   }
   runtime.registerStackTransformation((input) => {
     if (input.type !== type) return;
-    cb(input.props as any, input.opts as any);
+    cb(input.props as any, input.opts as any, input.name);
     return input;
   });
 }

@@ -24,6 +24,7 @@ import {
   getPartitionOutput,
   getRegionOutput,
   ecr,
+  getCallerIdentityOutput,
 } from "@pulumi/aws";
 import { ImageArgs, Platform } from "@pulumi/docker-build";
 import { Cluster as ClusterV1 } from "./cluster-v1";
@@ -184,25 +185,45 @@ export type ClusterVpcsNormalizedArgs = Required<
 interface ServiceRules {
   /**
    * The port and protocol the service listens on. Uses the format `{port}/{protocol}`.
+   *
+   * @example
+   * ```js
+   * {
+   *   listen: "80/http"
+   * }
+   * ```
    */
   listen: Input<Port>;
   /**
    * The port and protocol of the container the service forwards the traffic to. Uses the
    * format `{port}/{protocol}`.
+   *
+   * @example
+   * ```js
+   * {
+   *   forward: "80/http"
+   * }
+   * ```
    * @default The same port and protocol as `listen`.
    */
   forward?: Input<Port>;
   /**
-   * The name of the container to forward the traffic to.
+   * The name of the container to forward the traffic to. This maps to the `name` defined in the
+   * `container` prop.
    *
-   * You need this if there's more than one container.
-   *
-   * If there is only one container, the traffic is automatically forwarded to that
-   * container.
+   * You only need this if there's more than one container. If there's only one container, the
+   * traffic is automatically forwarded there.
    */
   container?: Input<string>;
   /**
    * The port and protocol to redirect the traffic to. Uses the format `{port}/{protocol}`.
+   *
+   * @example
+   * ```js
+   * {
+   *   redirect: "80/http"
+   * }
+   * ```
    */
   redirect?: Input<Port>;
   /**
@@ -210,21 +231,24 @@ interface ServiceRules {
    */
   path?: Input<string>;
   /**
-   * The conditions for the redirect. Only applicable to "http" protocols.
+   * The conditions for the redirect. Only applicable to `http` and `https` protocols.
    */
   conditions?: Input<{
     /**
      * Configure path-based routing. Only requests matching the path are forwarded to
      * the container.
      *
+     * ```js
+     * {
+     *   path: "/api/*"
+     * }
+     * ```
+     *
      * The path pattern is case-sensitive, supports wildcards, and can be up to 128
      * characters.
-     * - `*` matches 0 or more characters.
-     * - `?` matches exactly 1 character.
-     *
-     * For example:
-     * - `/api/*`
-     * - `/api/*.png
+     * - `*` matches 0 or more characters. For example, `/api/*` matches `/api/` or
+     *   `/api/orders`.
+     * - `?` matches exactly 1 character. For example, `/api/?.png` matches `/api/a.png`.
      *
      * @default Requests to all paths are forwarded.
      */
@@ -233,9 +257,15 @@ interface ServiceRules {
      * Configure query string based routing. Only requests matching one of the query
      * string conditions are forwarded to the container.
      *
+     * Takes a list of `key`, the name of the query string parameter, and `value` pairs.
+     * Where `value` is the value of the query string parameter. But it can be a pattern as well.
+     *
+     * If multiple `key` and `value` pairs are provided, it'll match requests with **any** of the
+     * query string parameters.
+     *
      * @example
      *
-     * Matching requests with query string `version=v1`.
+     * For example, to match requests with query string `version=v1`.
      *
      * ```js
      * {
@@ -245,7 +275,7 @@ interface ServiceRules {
      * }
      * ```
      *
-     * Matching requests with query string matching `env=test*`.
+     * Or match requests with query string matching `env=test*`.
      *
      * ```js
      * {
@@ -255,7 +285,7 @@ interface ServiceRules {
      * }
      * ```
      *
-     * Matching requests with query string `version=v1` or `env=test*`.
+     * Match requests with query string `version=v1` **or** `env=test*`.
      *
      * ```js
      * {
@@ -266,7 +296,7 @@ interface ServiceRules {
      * }
      * ```
      *
-     * Matching requests with any query string key with value `example`.
+     * Match requests with any query string key with value `example`.
      *
      * ```js
      * {
@@ -280,7 +310,16 @@ interface ServiceRules {
      */
     query?: Input<
       Input<{
+        /**
+         * The name of the query string parameter.
+         */
         key?: Input<string>;
+        /**
+         * The value of the query string parameter.
+         *
+         * If no `key` is provided, it'll match any request where a query string parameter with
+         * the given value exists.
+         */
         value: Input<string>;
       }>[]
     >;
@@ -1670,6 +1709,149 @@ export interface ClusterServiceArgs extends ClusterBaseArgs {
     requestCount?: Input<false | number>;
   }>;
   /**
+   * Configure the capacity provider; regular Fargate or Fargate Spot, for this service.
+   *
+   * :::tip
+   * Fargate Spot is a good option for dev or PR environments.
+   * :::
+   *
+   * Fargate Spot allows you to run containers on spare AWS capacity at around 50% discount
+   * compared to regular Fargate. [Learn more about Fargate
+   * pricing](https://aws.amazon.com/fargate/pricing/).
+   *
+   * :::note
+   * AWS might shut down Fargate Spot instances to reclaim capacity.
+   * :::
+   *
+   * There are a couple of caveats:
+   *
+   * 1. AWS may reclaim this capacity and **turn off your service** after a two-minute warning.
+   *    This is rare, but it can happen.
+   * 2. If there's no spare capacity, you'll **get an error**.
+   *
+   * This makes Fargate Spot a good option for dev or PR environments. You can set this using.
+   *
+   * ```js
+   * {
+   *   capacity: "spot"
+   * }
+   * ```
+   *
+   * You can also configure the % of regular vs spot capacity you want through the `weight` prop.
+   * And optionally set the `base` or first X number of tasks that'll be started using a given
+   * capacity.
+   *
+   * For example, the `base: 1` says that the first task uses regular Fargate, and from that
+   * point on there will be an even split between the capacity providers.
+   *
+   * ```js
+   * {
+   *   capacity: {
+   *     fargate: { weight: 1, base: 1 },
+   *     spot: { weight: 1 }
+   *   }
+   * }
+   * ```
+   *
+   * The `base` works in tandem with the `scaling` prop. So setting `base` to X doesn't mean
+   * it'll start those tasks right away. It means that as your service scales up, according to
+   * the `scaling` prop, it'll ensure that the first X tasks will be with the given capacity.
+   *
+   * :::caution
+   * Changing `capacity` requires taking down and recreating the ECS service.
+   * :::
+   *
+   * And this is why you can only set the `base` for only one capacity provider. So you
+   * are not allowed to do the following.
+   *
+   * ```js
+   * {
+   *   capacity: {
+   *     fargate: { weight: 1, base: 1 },
+   *     // This will give you an error
+   *     spot: { weight: 1, base: 1 }
+   *   }
+   * }
+   * ```
+   *
+   * When you change the `capacity`, the ECS service is terminated and recreated. This will
+   * cause some temporary downtime.
+   *
+   * @default Regular Fargate
+   *
+   * @example
+   *
+   * Here are some examples settings.
+   *
+   * - Use only Fargate Spot.
+   *
+   *   ```js
+   *   {
+   *     capacity: "spot"
+   *   }
+   *   ```
+   * - Use 50% regular Fargate and 50% Fargate Spot.
+   *
+   *   ```js
+   *   {
+   *     capacity: {
+   *       fargate: { weight: 1 },
+   *       spot: { weight: 1 }
+   *     }
+   *   }
+   *   ```
+   * - Use 50% regular Fargate and 50% Fargate Spot. And ensure that the first 2 tasks use
+   *   regular Fargate.
+   *
+   *   ```js
+   *   {
+   *     capacity: {
+   *       fargate: { weight: 1, base: 2 },
+   *       spot: { weight: 1 }
+   *     }
+   *   }
+   *   ```
+   */
+  capacity?: Input<
+    | "spot"
+    | {
+        /**
+         * Configure how the regular Fargate capacity is allocated.
+         */
+        fargate?: Input<{
+          /**
+           * Start the first `base` number of tasks with the given capacity.
+           *
+           * :::caution
+           * You can only specify `base` for one capacity provider.
+           * :::
+           */
+          base?: Input<number>;
+          /**
+           * Ensure the given ratio of tasks are started for this capacity.
+           */
+          weight: Input<number>;
+        }>;
+        /**
+         * Configure how the Fargate spot capacity is allocated.
+         */
+        spot?: Input<{
+          /**
+           * Start the first `base` number of tasks with the given capacity.
+           *
+           * :::caution
+           * You can only specify `base` for one capacity provider.
+           * :::
+           */
+          base?: Input<number>;
+          /**
+           * Ensure the given ratio of tasks are started for this capacity.
+           */
+          weight: Input<number>;
+        }>;
+      }
+  >;
+  /**
    * Configure the health check that ECS runs on your containers.
    *
    * :::tip
@@ -1994,7 +2176,7 @@ export interface ClusterTaskArgs extends ClusterBaseArgs {
  * Add a service to your cluster.
  *
  * ```ts title="sst.config.ts"
- * cluster.addService("MyService");
+ * const service = cluster.addService("MyService");
  * ```
  *
  * #### Configure the container image
@@ -2019,7 +2201,7 @@ export interface ClusterTaskArgs extends ClusterBaseArgs {
  *     min: 4,
  *     max: 16,
  *     cpuUtilization: 50,
- *     memoryUtilization: 50,
+ *     memoryUtilization: 50
  *   }
  * });
  * ```
@@ -2032,8 +2214,8 @@ export interface ClusterTaskArgs extends ClusterBaseArgs {
  * ```ts title="sst.config.ts"
  * const service = cluster.addService("MyService", {
  *   serviceRegistry: {
- *     port: 80,
- *   },
+ *     port: 80
+ *   }
  * });
  *
  * const api = new sst.aws.ApiGatewayV2("MyApi", {
@@ -2054,7 +2236,7 @@ export interface ClusterTaskArgs extends ClusterBaseArgs {
  *     domain: "example.com",
  *     rules: [
  *       { listen: "80/http" },
- *       { listen: "443/https", forward: "80/http" },
+ *       { listen: "443/https", forward: "80/http" }
  *     ]
  *   }
  * });
@@ -2069,7 +2251,7 @@ export interface ClusterTaskArgs extends ClusterBaseArgs {
  * const bucket = new sst.aws.Bucket("MyBucket");
  *
  * cluster.addService("MyService", {
- *   link: [bucket],
+ *   link: [bucket]
  * });
  * ```
  *
@@ -2080,6 +2262,32 @@ export interface ClusterTaskArgs extends ClusterBaseArgs {
  *
  * console.log(Resource.MyBucket.name);
  * ```
+ *
+ * #### Service discovery
+ *
+ * This component automatically creates a Cloud Map service host name for the service. So
+ * anything in the same VPC can access it using the service's host name.
+ *
+ * For example, if you link the service to a Lambda function that's in the same VPC.
+ *
+ * ```ts title="sst.config.ts" {2,4}
+ * new sst.aws.Function("MyFunction", {
+ *   vpc,
+ *   url: true,
+ *   link: [service],
+ *   handler: "lambda.handler"
+ * });
+ * ```
+ *
+ * You can access the service by its host name using the [SDK](/docs/reference/sdk/).
+ *
+ * ```ts title="lambda.ts"
+ * import { Resource } from "sst";
+ *
+ * await fetch(`http://${Resource.MyService.service}`);
+ * ```
+ *
+ * [Check out an example](/docs/examples/#aws-cluster-service-discovery).
  *
  * ---
  *
@@ -2163,7 +2371,10 @@ export interface ClusterTaskArgs extends ClusterBaseArgs {
  * container also gets a public IPv4 address at $0.005 per hour.
  *
  * For a service, works out to $0.04048 x 0.25 x 24 x 30 + $0.004445 x 0.5 x 24 x 30 + $0.005
- * x 24 x 30 or **$13 per month**.
+ * x 24 x 30 or **$12 per month**.
+ *
+ * If you are using all Fargate Spot instances with `capacity: "spot"`, it's $0.01218784 x 0.25
+ * x 24 x 30 + $0.00133831 x 0.5 x 24 x 30 + $0.005 x 24 x 30 or **$6 per month**
  *
  * For a task, it works out to $0.04048 x 0.25 + $0.004445 x 0.5 + $0.005. Or **$0.02 per hour**
  * your task runs for.
@@ -2251,6 +2462,7 @@ export class Cluster extends Component {
 
     const vpc = normalizeVpc();
     const cluster = createCluster();
+    createCapacityProviders();
 
     this.constructorOpts = opts;
     this.cluster = cluster;
@@ -2297,6 +2509,13 @@ export class Cluster extends Component {
           { parent: self },
         ),
       );
+    }
+
+    function createCapacityProviders() {
+      return new ecs.ClusterCapacityProviders(`${name}CapacityProviders`, {
+        clusterName: cluster.name,
+        capacityProviders: ["FARGATE", "FARGATE_SPOT"],
+      });
     }
   }
 
@@ -2571,6 +2790,7 @@ export function createTaskRole(
   args: ClusterTaskArgs,
   opts: ComponentResourceOptions,
   parent: Component,
+  dev: boolean,
   additionalPermissions?: FunctionArgs["permissions"],
 ) {
   if (args.taskRole)
@@ -2584,10 +2804,7 @@ export function createTaskRole(
     iam.getPolicyDocumentOutput({
       statements: [
         ...argsPermissions,
-        ...linkPermissions.map((item) => ({
-          actions: item.actions,
-          resources: item.resources,
-        })),
+        ...linkPermissions,
         ...(additionalPermissions ?? []),
         {
           actions: [
@@ -2598,7 +2815,14 @@ export function createTaskRole(
           ],
           resources: ["*"],
         },
-      ],
+      ].map((item) => ({
+        effect: (() => {
+          const effect = item.effect ?? "allow";
+          return effect.charAt(0).toUpperCase() + effect.slice(1);
+        })(),
+        actions: item.actions,
+        resources: item.resources,
+      })),
     }),
   );
 
@@ -2609,6 +2833,7 @@ export function createTaskRole(
       {
         assumeRolePolicy: iam.assumeRolePolicyForPrincipal({
           Service: "ecs-tasks.amazonaws.com",
+          ...(dev ? { AWS: getCallerIdentityOutput({}, opts).accountId } : {}),
         }),
         inlinePolicies: policy.apply(({ statements }) =>
           statements ? [{ name: "inline", policy: policy.json }] : [],
@@ -2633,7 +2858,6 @@ export function createExecutionRole(
       { parent },
     );
 
-  const partition = getPartitionOutput({}, opts).partition;
   return new iam.Role(
     ...transform(
       args.transform?.executionRole,
@@ -2643,7 +2867,9 @@ export function createExecutionRole(
           Service: "ecs-tasks.amazonaws.com",
         }),
         managedPolicyArns: [
-          interpolate`arn:${partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy`,
+          interpolate`arn:${
+            getPartitionOutput({}, opts).partition
+          }:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy`,
         ],
         inlinePolicies: [
           {
