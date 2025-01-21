@@ -6,10 +6,10 @@ import {
   output,
 } from "@pulumi/pulumi";
 import { Component, transform } from "../component";
-import { Function } from "./function";
 import { VisibleError } from "../error";
 import { ApiGatewayV1AuthorizerArgs } from "./apigatewayv1";
 import { apigateway, lambda } from "@pulumi/aws";
+import { FunctionBuilder, functionBuilder } from "./helpers/function-builder";
 
 export interface AuthorizerArgs extends ApiGatewayV1AuthorizerArgs {
   /**
@@ -43,13 +43,12 @@ export interface AuthorizerArgs extends ApiGatewayV1AuthorizerArgs {
  */
 export class ApiGatewayV1Authorizer extends Component {
   private readonly authorizer: apigateway.Authorizer;
-  private readonly fn?: Output<Function>;
-  private readonly permission?: lambda.Permission;
+  private readonly fn?: FunctionBuilder;
 
   constructor(
     name: string,
     args: AuthorizerArgs,
-    opts: ComponentResourceOptions = {}
+    opts: ComponentResourceOptions = {},
   ) {
     super(__pulumiType, name, args, opts);
 
@@ -62,11 +61,10 @@ export class ApiGatewayV1Authorizer extends Component {
 
     const fn = createFunction();
     const authorizer = createAuthorizer();
-    const permission = createPermission();
+    createPermission();
 
     this.fn = fn;
     this.authorizer = authorizer;
-    this.permission = permission;
 
     function validateSingleAuthorizer() {
       const authorizers = [
@@ -97,11 +95,15 @@ export class ApiGatewayV1Authorizer extends Component {
       const fn = args.tokenFunction ?? args.requestFunction;
       if (!fn) return;
 
-      return Function.fromDefinition(`${name}Function`, fn, {
-        description: interpolate`${api.name} authorizer`,
-      },
-      undefined,
-      { parent: self, provider: opts.provider });
+      return functionBuilder(
+        `${name}Handler`,
+        fn,
+        {
+          description: interpolate`${api.name} authorizer`,
+        },
+        undefined,
+        { parent: self },
+      );
     }
 
     function createPermission() {
@@ -115,7 +117,7 @@ export class ApiGatewayV1Authorizer extends Component {
           principal: "apigateway.amazonaws.com",
           sourceArn: interpolate`${api.executionArn}/authorizers/${authorizer.id}`,
         },
-        { parent: self, provider: opts.provider },
+        { parent: self },
       );
     }
 
@@ -129,11 +131,11 @@ export class ApiGatewayV1Authorizer extends Component {
             type,
             name: args.name,
             providerArns: args.userPools,
-            authorizerUri: fn?.nodes.function.invokeArn,
+            authorizerUri: fn?.invokeArn,
             authorizerResultTtlInSeconds: args.ttl,
             identitySource: args.identitySource,
           },
-          { parent: self, provider: opts.provider },
+          { parent: self },
         ),
       );
     }

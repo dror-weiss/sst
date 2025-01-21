@@ -14,7 +14,7 @@ export function setupApiGatewayAccount(
     `${namePrefix}APIGatewayAccount`,
     "APIGatewayAccount",
     undefined,
-    {provider: opts.provider},
+    { provider: opts.provider },
   );
 
   return account.cloudwatchRoleArn.apply((arn) => {
@@ -43,9 +43,12 @@ export function setupApiGatewayAccount(
       { retainOnDelete: true, provider: opts.provider },
     );
 
-    return new apigateway.Account(`${namePrefix}APIGatewayAccountSetup`, {
-      cloudwatchRoleArn: role.arn,
-    },
-    { provider: opts.provider });
+    return new apigateway.Account(
+      `${namePrefix}APIGatewayAccountSetup`,
+      {
+        cloudwatchRoleArn: role.arn,
+      },
+      { provider: opts.provider },
+    );
   });
 }
