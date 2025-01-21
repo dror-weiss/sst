@@ -542,6 +542,15 @@ export interface ApiGatewayV1RouteArgs {
      */
     integration?: Transform<apigateway.IntegrationArgs>;
   };
+
+  /**
+   * The id of the parent resource that the path is relative to.
+   * By default, it is the id of the root resource of this api.
+   *
+   * When adding routes to other API, you need to set this to the id of the parent resource to
+   * avoid conflicts.
+   */
+  pathParentId?: Input<string>;
 }
 
 export interface ApiGatewayV1IntegrationArgs {
@@ -1015,7 +1024,7 @@ export class ApiGatewayV1 extends Component implements Link.Linkable {
             restApi: this.api.id,
             parentId:
               parentPath === "/"
-                ? this.api.rootResourceId
+                ? this.constructorArgs.pathParentId ?? this.api.rootResourceId
                 : this.resources[parentPath],
             pathPart: pathParts[i],
           },
