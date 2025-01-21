@@ -874,7 +874,7 @@ export class ApiGatewayV1 extends Component implements Link.Linkable {
     args: ApiGatewayV1RouteArgs = {},
   ) {
     const { method, path } = this.parseRoute(route);
-    this.createResource(path);
+    this.createResource(path, args);
 
     const transformed = transform(
       this.constructorArgs.transform?.route?.args,
@@ -1009,7 +1009,7 @@ export class ApiGatewayV1 extends Component implements Link.Linkable {
     return `${this.constructorName}Route${suffix}`;
   }
 
-  private createResource(path: string) {
+  private createResource(path: string, args: ApiGatewayV1RouteArgs = {}) {
     const pathParts = path.replace(/^\//, "").split("/");
     for (let i = 0, l = pathParts.length; i < l; i++) {
       const parentPath = "/" + pathParts.slice(0, i).join("/");
@@ -1024,7 +1024,7 @@ export class ApiGatewayV1 extends Component implements Link.Linkable {
             restApi: this.api.id,
             parentId:
               parentPath === "/"
-                ? this.constructorArgs.pathParentId ?? this.api.rootResourceId
+                ? args.pathParentId ?? this.api.rootResourceId
                 : this.resources[parentPath],
             pathPart: pathParts[i],
           },
